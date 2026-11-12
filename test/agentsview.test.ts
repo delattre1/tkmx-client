@@ -109,24 +109,25 @@ describe("collectAgentsviewUsage WARP_DIR scoping", () => {
   // then emits empty daily JSON so the caller parses cleanly. Proves the
   // Warp-skip is scoped to the syncing call (the only one that runs the
   // parser registry that hangs an unattended daemon), not the --no-sync one.
-  it("sets WARP_DIR=/var/empty on the syncing claude call but not the --no-sync codex call", () => {
+  it("syncs once directly (no daemon, WARP_DIR=/var/empty), then reads both agents with --no-sync", () => {
     const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "tkmx-warp-"));
     try {
       const logPath = path.join(tmp, "calls.log");
       const fakeBin = path.join(tmp, "agentsview");
       writeExec(
         fakeBin,
-        `#!/bin/sh\necho "WARP_DIR=\${WARP_DIR}|$*" >> "${logPath}"\necho '{"daily":[]}'\n`,
+        `#!/bin/sh\necho "NO_DAEMON=\${AGENTSVIEW_NO_DAEMON}|WARP_DIR=\${WARP_DIR}|$*" >> "${logPath}"\necho '{"daily":[]}'\n`,
       );
 
       collectAgentsviewUsage(fakeBin, "20260501");
 
       const lines = fs.readFileSync(logPath, "utf-8").trim().split("\n");
-      const claudeLine = lines.find((l) => l.includes("--agent claude"));
-      const codexLine = lines.find((l) => l.includes("--agent codex"));
-      assert.match(claudeLine, /WARP_DIR=\/var\/empty\|/);
-      assert.ok(codexLine.includes("--no-sync"), "codex call should pass --no-sync");
-      assert.doesNotMatch(codexLine, /WARP_DIR=\/var\/empty\|/);
+      assert.equal(lines.length, 3);
+      assert.equal(lines[0], "NO_DAEMON=1|WARP_DIR=/var/empty|sync");
+      for (const [i, agent] of [[1, "claude"], [2, "codex"]] as const) {
+        assert.ok(lines[i].includes(`--agent ${agent}`) && lines[i].endsWith("--no-sync"), lines[i]);
+        assert.doesNotMatch(lines[i], /WARP_DIR=\/var\/empty\|/);
+      }
     } finally {
       fs.rmSync(tmp, { recursive: true, force: true });
     }
@@ -278,14 +279,18 @@ describe("resolveAgentsviewWith — Windows branch (host-independent)", () => {
 describe("stopAgentsviewDaemonOnExit", () => {
   // Runs the real function in a child node process against a fake agentsview
   // whose `daemon status` prints the given line, and returns the calls it saw.
-  function callsWhenStatusSays(statusLine) {
+  function callsWhenStatusSays(statusLine, then = "") {
     const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "tkmx-daemon-"));
     try {
       const logPath = path.join(tmp, "calls.log");
       const fakeBin = path.join(tmp, "agentsview");
       writeExec(fakeBin, `#!/bin/sh\necho "$*" >> "${logPath}"\n[ "$2" = status ] && echo "${statusLine}"\nexit 0\n`);
       const mod = path.join(__dirname, "../reporter/agentsview.js");
-      execFileSync(process.execPath, ["-e", `require(${JSON.stringify(mod)}).stopAgentsviewDaemonOnExit(${JSON.stringify(fakeBin)})`]);
+      try {
+        execFileSync(process.execPath, ["-e", `require(${JSON.stringify(mod)}).stopAgentsviewDaemonOnExit(${JSON.stringify(fakeBin)});${then}`]);
+      } catch {
+        // a signalled child exits non-zero; the calls log is what we assert on
+      }
       return fs.readFileSync(logPath, "utf-8").trim().split("\n");
     } finally {
       fs.rmSync(tmp, { recursive: true, force: true });
@@ -294,6 +299,11 @@ describe("stopAgentsviewDaemonOnExit", () => {
 
   it("stops the daemon our reads auto-started when the process exits", () => {
     assert.deepEqual(callsWhenStatusSays("No agentsview daemon is running."), ["daemon status", "daemon stop"]);
+  });
+
+  it("still stops it when launchd SIGTERMs the run", () => {
+    const killSelf = `setTimeout(() => {}, 5000); process.kill(process.pid, "SIGTERM");`;
+    assert.deepEqual(callsWhenStatusSays("No agentsview daemon is running.", killSelf), ["daemon status", "daemon stop"]);
   });
 
   it("leaves a daemon the user already had running", () => {

@@ -205,13 +205,24 @@ function queryAgent(
 export function collectAgentsviewUsage(bin: string, sinceStr: string, timeoutMs: number = 180000): { claudeDaily: DailyUsage[]; codexDaily: DailyUsage[] } {
   const since = toIsoDate(sinceStr);
 
-  // One sync call covers every agent: agentsview's syncAllLocked
-  // (internal/sync/engine.go) iterates parser.Registry in a single
-  // pass, so triggering sync via the claude query also picks up
-  // codex, gemini, copilot, etc. The codex follow-up passes
-  // --no-sync to avoid a redundant second pass. If agentsview ever
-  // changes to per-agent sync scoping, drop --no-sync here.
-  const claudeDaily = queryAgent(bin, since, "claude", false, timeoutMs);
+  // One direct sync covers every agent (agentsview's syncAllLocked walks the
+  // whole parser registry), then both reads skip sync. A syncing read instead
+  // hands the sync to the freshly auto-started daemon, which first runs its full
+  // startup reconciliation (~5k files: minutes of CPU on a busy Mac, measured
+  // 2.5 min) before answering. AGENTSVIEW_NO_DAEMON makes `sync` write
+  // in-process and exit. Best effort: on failure we report the last snapshot.
+  try {
+    execFileSync(bin, ["sync"], {
+      env: { ...process.env, AGENTSVIEW_NO_DAEMON: "1", WARP_DIR: WARP_SKIP_DIR },
+      stdio: ["ignore", "ignore", "pipe"],
+      timeout: timeoutMs,
+      killSignal: "SIGKILL",
+    });
+  } catch (err) {
+    const stderr = (err as { stderr?: Buffer }).stderr?.toString().trim() || "";
+    console.error(`  agentsview sync skipped (${stderr || errMessage(err)}); reading last-synced data`);
+  }
+  const claudeDaily = queryAgent(bin, since, "claude", true, timeoutMs);
   const codexDaily = queryAgent(bin, since, "codex", true, timeoutMs);
 
   return { claudeDaily, codexDaily };
@@ -244,9 +255,16 @@ export function stopAgentsviewDaemonOnExit(bin: string): void {
     return; // can't tell who owns a daemon: leave everything as is
   }
   if (!status.includes("No agentsview daemon is running")) return;
+  // Signals skip "exit" handlers; launchd SIGTERMs us on unload. An orphan left
+  // there would look like the user's daemon to every later run.
+  process.once("SIGTERM", () => process.exit(143));
+  process.once("SIGINT", () => process.exit(130));
   process.on("exit", () => {
     try {
-      execFileSync(bin, ["daemon", "stop"], { stdio: "ignore", timeout: 15000 });
+      // `daemon stop` = SIGTERM, a 10s grace, then SIGKILL; a busy daemon
+      // takes ~16s. A shorter timeout kills the stop itself, the daemon
+      // survives, and the next run then mistakes it for the user's.
+      execFileSync(bin, ["daemon", "stop"], { stdio: "ignore", timeout: 60000 });
     } catch {
       // best effort: the next run tries again
     }

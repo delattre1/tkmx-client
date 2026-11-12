@@ -115,6 +115,11 @@ describe("buildLaunchdPlist", () => {
     assert.match(plist, /<string>\/opt\/homebrew\/bin:\/usr\/local\/bin:\/usr\/bin:\/bin<\/string>/);
   });
 
+  it("runs as a Background process so a usage scan never competes with foreground apps", () => {
+    const plist = buildLaunchdPlist(inputs);
+    assert.match(plist, /<key>ProcessType<\/key>\s*<string>Background<\/string>/);
+  });
+
   it("uses the supplied label", () => {
     const plist = buildLaunchdPlist(inputs);
     assert.match(plist, /<key>Label<\/key>\s*<string>com\.test\.reporter<\/string>/);

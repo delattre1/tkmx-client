@@ -74,6 +74,8 @@ export function buildLaunchdPlist({ label, nodePath, reportScript, workingDir, l
   <integer>7200</integer>
   <key>RunAtLoad</key>
   <true/>
+  <key>ProcessType</key>
+  <string>Background</string>
   <key>StandardOutPath</key>
   <string>${logPath}</string>
   <key>StandardErrorPath</key>
