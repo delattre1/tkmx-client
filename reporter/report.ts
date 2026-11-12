@@ -10,6 +10,7 @@ import {
   collectAgentsviewClaudeOnly,
   resolveAgentsview,
   detectAgentsviewVersion,
+  stopAgentsviewDaemonOnExit,
 } from "./agentsview";
 import { collectOpenAIUsage } from "./openai";
 import { collectOpenclawUsage, discoverOpenclawSessionsDirs } from "./openclaw";
@@ -234,6 +235,7 @@ async function main(): Promise<void> {
     process.exit(1);
   }
   console.log(`  Using agentsview at ${agentsviewBin}`);
+  stopAgentsviewDaemonOnExit(agentsviewBin);
   const agentsviewVersion = detectAgentsviewVersion(agentsviewBin);
   if (agentsviewVersion) console.log(`  agentsview version: ${agentsviewVersion}`);
 

@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import * as path from "node:path";
 import * as os from "node:os";
 import * as fs from "node:fs";
+import { execFileSync } from "node:child_process";
 
 import { parseAgentsviewOutput, toIsoDate, collectAgentsviewUsage, resolveAgentsviewWith } from "../reporter/agentsview";
 
@@ -271,5 +272,31 @@ describe("resolveAgentsviewWith — Windows branch (host-independent)", () => {
       isExecutable: (p) => p === shim,
     });
     assert.equal(found, null);
+  });
+});
+
+describe("stopAgentsviewDaemonOnExit", () => {
+  // Runs the real function in a child node process against a fake agentsview
+  // whose `daemon status` prints the given line, and returns the calls it saw.
+  function callsWhenStatusSays(statusLine) {
+    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "tkmx-daemon-"));
+    try {
+      const logPath = path.join(tmp, "calls.log");
+      const fakeBin = path.join(tmp, "agentsview");
+      writeExec(fakeBin, `#!/bin/sh\necho "$*" >> "${logPath}"\n[ "$2" = status ] && echo "${statusLine}"\nexit 0\n`);
+      const mod = path.join(__dirname, "../reporter/agentsview.js");
+      execFileSync(process.execPath, ["-e", `require(${JSON.stringify(mod)}).stopAgentsviewDaemonOnExit(${JSON.stringify(fakeBin)})`]);
+      return fs.readFileSync(logPath, "utf-8").trim().split("\n");
+    } finally {
+      fs.rmSync(tmp, { recursive: true, force: true });
+    }
+  }
+
+  it("stops the daemon our reads auto-started when the process exits", () => {
+    assert.deepEqual(callsWhenStatusSays("No agentsview daemon is running."), ["daemon status", "daemon stop"]);
+  });
+
+  it("leaves a daemon the user already had running", () => {
+    assert.deepEqual(callsWhenStatusSays("agentsview running at http://127.0.0.1:8080 (pid 1)"), ["daemon status"]);
   });
 });

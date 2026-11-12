@@ -225,3 +225,30 @@ export function collectAgentsviewClaudeOnly(bin: string, sinceStr: string, env: 
   const since = toIsoDate(sinceStr);
   return queryAgent(bin, since, "claude", false, timeoutMs, env);
 }
+
+// agentsview reads silently auto-start a background `serve` daemon that
+// outlives this process and re-syncs every session file on each change: ~1 core
+// for minutes while it catches up (after a boot or a fresh install), ~0.2 core
+// forever after on a Mac full of busy agents. A scheduled reporter only needs it
+// for its own reads, so stop it on exit -- unless one was already running before
+// we started, which is the user's to keep.
+export function stopAgentsviewDaemonOnExit(bin: string): void {
+  let status: string;
+  try {
+    status = execFileSync(bin, ["daemon", "status"], {
+      encoding: "utf-8",
+      timeout: 10000,
+      stdio: ["ignore", "pipe", "ignore"],
+    });
+  } catch {
+    return; // can't tell who owns a daemon: leave everything as is
+  }
+  if (!status.includes("No agentsview daemon is running")) return;
+  process.on("exit", () => {
+    try {
+      execFileSync(bin, ["daemon", "stop"], { stdio: "ignore", timeout: 15000 });
+    } catch {
+      // best effort: the next run tries again
+    }
+  });
+}
